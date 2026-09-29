@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>フラッシュ型ADC シミュレータ</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0; font-family: "Noto Sans JP", Arial, sans-serif;
+  background: #f4f6f8; color: #202124;
+}
+header {
+  background: #263238; color: white; padding: 22px 20px;
+  text-align: center;
+}
+header h1 { margin: 0 0 8px; font-size: 28px; }
+header p { margin: 0; opacity: .9; }
+.container { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+.card {
+  background: white; border-radius: 12px; padding: 20px;
+  margin-bottom: 18px; box-shadow: 0 2px 10px rgba(0,0,0,.08);
+}
+.controls {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+}
+label { font-weight: bold; display: block; margin-bottom: 7px; }
+input, select, button {
+  width: 100%; padding: 10px 12px; border: 1px solid #b0bec5;
+  border-radius: 7px; font-size: 16px;
+}
+input:focus, select:focus { outline: 2px solid #90caf9; }
+button {
+  cursor: pointer; background: #37474f; color: white; border: none;
+  font-weight: bold;
+}
+button:hover { opacity: .9; }
+.buttons { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 15px; }
+.step-title { font-size: 22px; font-weight: bold; margin-bottom: 8px; }
+.explanation {
+  background: #eceff1; border-left: 5px solid #546e7a;
+  padding: 13px; border-radius: 5px; line-height: 1.7;
+}
+.visual { overflow-x: auto; }
+.comparators {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  gap: 10px; margin-top: 15px;
+}
+.comp {
+  border: 2px solid #cfd8dc; border-radius: 9px; padding: 12px;
+  text-align: center; background: #fafafa;
+}
+.comp.active { border-color: #455a64; background: #eceff1; }
+.comp .circle {
+  width: 45px; height: 45px; border-radius: 50%;
+  margin: 5px auto 10px; display:flex; align-items:center; justify-content:center;
+  background: #cfd8dc; font-weight: bold; color: #263238;
+}
+.comp.one .circle { background: #546e7a; color: white; }
+.comp.zero .circle { background: #eceff1; }
+.code {
+  font-family: Consolas, monospace; font-size: 30px; letter-spacing: 5px;
+  padding: 15px; background: #263238; color: white;
+  border-radius: 8px; text-align: center; margin: 12px 0;
+}
+.result {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+}
+.result div {
+  background: #eceff1; border-radius: 8px; padding: 14px; text-align:center;
+}
+.result strong { display:block; font-size: 25px; margin-top:5px; }
+table { width:100%; border-collapse:collapse; margin-top:15px; }
+th, td { border:1px solid #cfd8dc; padding:9px; text-align:center; }
+th { background:#eceff1; }
+.badge {
+  display:inline-block; padding:4px 9px; border-radius:20px;
+  background:#eceff1; font-size:13px;
+}
+.hidden { display:none; }
+@media (max-width: 700px) {
+  .controls, .result { grid-template-columns: 1fr; }
+  .buttons { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>フラッシュ型ADC シミュレータ</h1>
+  <p>入力電圧 → 比較器 → サーモメータコード → 2進数</p>
+</header>
+
+<div class="container">
+  <div class="card">
+    <h2>1. パラメータ設定</h2>
+    <div class="controls">
+      <div>
+        <label for="vin">入力アナログ電圧 Vin [V]</label>
+        <input id="vin" type="number" min="0" max="10" step="0.01" value="3.6">
+      </div>
+      <div>
+        <label for="vref">最大入力電圧 Vref [V]</label>
+        <input id="vref" type="number" min="0.1" max="20" step="0.1" value="5">
+      </div>
+      <div>
+        <label for="bits">分解能 [bit]</label>
+        <select id="bits">
+          <option value="2">2 bit</option>
+          <option value="3" selected>3 bit</option>
+          <option value="4">4 bit</option>
+          <option value="5">5 bit</option>
+          <option value="6">6 bit</option>
+          <option value="7">7 bit</option>
+          <option value="8">8 bit</option>
+        </select>
+      </div>
+    </div>
+    <div class="buttons">
+      <button onclick="resetSim()">最初から</button>
+      <button onclick="prevStep()">← 前のステップ</button>
+      <button onclick="nextStep()">次のステップ →</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="explanation" id="explanation"></div>
+  </div>
+
+  <div class="card visual" id="visual"></div>
+</div>
+
+<script>
+let step = 0;
+
+function getData() {
+  let vin = parseFloat(document.getElementById("vin").value);
+  let vmax = parseFloat(document.getElementById("vref").value);
+  let bits = parseInt(document.getElementById("bits").value);
+
+  if (!Number.isFinite(vin)) vin = 0;
+  if (!Number.isFinite(vmax) || vmax <= 0) vmax = 5;
+  vin = Math.max(0, Math.min(vin, vmax));
+
+  const levels = 2 ** bits;
+  const comparatorCount = levels - 1;
+  const stepV = vmax / levels;
+
+  let ones = 0;
+  for (let i = 1; i <= comparatorCount; i++) {
+    if (vin >= i * stepV) ones++;
+  }
+  const digital = Math.min(levels - 1, ones);
+  const binary = digital.toString(2).padStart(bits, "0");
+  const quantized = digital * stepV;
+
+  return {vin, vmax, bits, levels, comparatorCount, stepV, ones, digital, binary, quantized};
+}
+
+function resetSim() {
+  step = 0;
+  render();
+}
+
+function prevStep() {
+  if (step > 0) step--;
+  render();
+}
+
+function nextStep() {
+  if (step < 5) step++;
+  render();
+}
+
+function render() {
+  const d = getData();
+  const titles = [
+    "STEP 1：基準電圧を設定する",
+    "STEP 2：入力電圧を確認する",
+    "STEP 3：比較器で同時に比較する",
+    "STEP 4：サーモメータコードを作る",
+    "STEP 5：2進数へエンコードする",
+    "STEP 6：変換結果を確認する"
+  ];
+  document.getElementById("stepTitle").textContent = titles[step];
+
+  let explanation = "";
+  if (step === 0) {
+    explanation = `分解能 ${d.bits} bit では ${d.levels} 段階に量子化します。\
+フラッシュ型ADCでは、${d.comparatorCount} 個の比較器を使用します。`;
+  } else if (step === 1) {
+    explanation = `入力電圧は ${d.vin.toFixed(2)} V です。\
+入力範囲は 0 ～ ${d.vmax.toFixed(2)} V、1段階あたりの量子化幅は ${d.stepV.toFixed(4)} V です。`;
+  } else if (step === 2) {
+    explanation = `各比較器が「Vin が基準電圧以上か」を同時に判定します。\
+1段階の基準電圧は ${d.stepV.toFixed(4)} V です。`;
+  } else if (step === 3) {
+    explanation = `比較結果を上から並べるとサーモメータコードになります。\
+「1」が ${d.ones} 個連続していることに注目してください。`;
+  } else if (step === 4) {
+    explanation = `エンコーダがサーモメータコードの「1」の個数を、${d.bits} bit の2進数に変換します。`;
+  } else {
+    explanation = `最終的なデジタル値は ${d.digital}（2進数では ${d.binary}）です。\
+量子化値は ${d.quantized.toFixed(4)} V です。`;
+  }
+  document.getElementById("explanation").textContent = explanation;
+
+  const visual = document.getElementById("visual");
+
+  if (step === 0) {
+    visual.innerHTML = `
+      <h3>フラッシュ型ADCの構成</h3>
+      <p>必要な比較器数：</p>
+      <div class="code">${d.comparatorCount} 個</div>
+      <p>計算式：<strong>2<sup>n</sup> − 1 = 2<sup>${d.bits}</sup> − 1 = ${d.comparatorCount}</strong></p>
+      <p class="badge">重要：比較器（Comparator）</p>
+      <p class="badge">重要：基準電圧（Reference Voltage）</p>
+      <p class="badge">重要：サーモメータコード（Thermometer Code）</p>
+    `;
+  } else if (step === 1) {
+    visual.innerHTML = `
+      <h3>入力電圧</h3>
+      <div class="result">
+        <div>Vin<strong>${d.vin.toFixed(2)} V</strong></div>
+        <div>入力範囲<strong>0 ～ ${d.vmax.toFixed(2)} V</strong></div>
+        <div>量子化幅<strong>${d.stepV.toFixed(4)} V</strong></div>
+      </div>
+    `;
+  } else if (step === 2) {
+    let html = `<h3>比較器による並列比較</h3><div class="comparators">`;
+    for (let i = 1; i <= d.comparatorCount; i++) {
+      const ref = i * d.stepV;
+      const result = d.vin >= ref ? 1 : 0;
+      html += `
+        <div class="comp ${result ? "one" : "zero"} active">
+          <b>比較器 ${i}</b>
+          <div class="circle">${result}</div>
+          <div>Vin = ${d.vin.toFixed(2)} V</div>
+          <div>Vref = ${ref.toFixed(3)} V</div>
+          <strong>${d.vin.toFixed(2)} ${result ? "≥" : "<"} ${ref.toFixed(3)}</strong>
+        </div>`;
+    }
+    html += `</div>`;
+    visual.innerHTML = html;
+  } else if (step === 3) {
+    let code = "";
+    for (let i = 1; i <= d.comparatorCount; i++) {
+      code += d.vin >= i * d.stepV ? "1" : "0";
+    }
+    visual.innerHTML = `
+      <h3>サーモメータコード</h3>
+      <div class="code">${code}</div>
+      <p>「1」の個数：<strong>${d.ones}</strong></p>
+      <p>入力電圧が高いほど、より多くの比較器が「1」を出力します。</p>
+    `;
+  } else if (step === 4) {
+    visual.innerHTML = `
+      <h3>エンコーダによる変換</h3>
+      <div class="code">${d.binary}</div>
+      <p>サーモメータコードの「1」の個数 ${d.ones} → ${d.bits} bit の2進数</p>
+      <p><strong>${d.ones}<sub>10</sub> = ${d.binary}<sub>2</sub></strong></p>
+    `;
+  } else {
+    visual.innerHTML = `
+      <h3>最終結果</h3>
+      <div class="result">
+        <div>デジタル値<strong>${d.digital}</strong></div>
+        <div>2進数<strong>${d.binary}</strong></div>
+        <div>量子化電圧<strong>${d.quantized.toFixed(4)} V</strong></div>
+      </div>
+      <table>
+        <tr><th>項目</th><th>値</th></tr>
+        <tr><td>入力電圧 Vin</td><td>${d.vin.toFixed(4)} V</td></tr>
+        <tr><td>分解能</td><td>${d.bits} bit</td></tr>
+        <tr><td>段階数</td><td>${d.levels}</td></tr>
+        <tr><td>比較器数</td><td>${d.comparatorCount}</td></tr>
+        <tr><td>量子化幅</td><td>${d.stepV.toFixed(4)} V</td></tr>
+        <tr><td>デジタル出力</td><td>${d.digital} (${d.binary})</td></tr>
+      </table>
+    `;
+  }
+}
+
+document.getElementById("vin").addEventListener("input", render);
+document.getElementById("vref").addEventListener("input", render);
+document.getElementById("bits").addEventListener("change", render);
+render();
+</script>
+</body>
+</html>
